@@ -20,6 +20,10 @@ if OUTPUT_DIR.exists():
     shutil.rmtree(OUTPUT_DIR)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
+forces_log_h = open(OUTPUT_DIR / "forces_log.txt", "w")
+print(
+    "timestep\tf_total_x\tf_total_y\tf_total_magnitude", file=forces_log_h, flush=True
+)
 DPI = 300
 
 
@@ -54,13 +58,19 @@ class FlowPastFractal(KBCSim):
 
         # whole left boundary is inlet
         inlet = self.boundingBoxIndices["left"]
-        rho_wall = np.ones((inlet.shape[0], 1), dtype=self.precisionPolicy.compute_dtype)
+        rho_wall = np.ones(
+            (inlet.shape[0], 1), dtype=self.precisionPolicy.compute_dtype
+        )
         vel_wall = np.zeros(inlet.shape, dtype=self.precisionPolicy.compute_dtype)
         vel_wall[:, 0] = self.inlet_velocity
 
-        noslip_bcs = np.concatenate((stationary_walls, self.fractal_indices))
         self.BCs.append(
-            BounceBackHalfway(tuple(noslip_bcs.T), self.gridInfo, self.precisionPolicy)
+            BounceBackHalfway(
+                tuple(self.fractal_indices.T), self.gridInfo, self.precisionPolicy
+            )
+        )
+        self.BCs.append(
+            BounceBack(tuple(stationary_walls.T), self.gridInfo, self.precisionPolicy)
         )
         self.BCs.append(
             DoNothing(
@@ -85,7 +95,19 @@ class FlowPastFractal(KBCSim):
         u_new = np.linalg.norm(u, axis=2)
         err = np.sum(np.abs(u_old - u_new))
 
-        print("error= {:07.6f}".format(err))
+        FRACTAL_BC_IDX = 0
+        fractal = self.BCs[FRACTAL_BC_IDX]
+        forces_on_fractal = fractal.momentum_exchange_force(
+            kwargs["f_poststreaming"], kwargs["f_postcollision"]
+        )
+        forces_on_fractal = np.sum(np.array(forces_on_fractal), axis=0)
+        print(f"forces = {forces_on_fractal}")
+        print(
+            f"{kwargs['timestep']}\t{forces_on_fractal[0]}\t{forces_on_fractal[1]}\t{np.linalg.norm(forces_on_fractal, 2)}",
+            file=forces_log_h,
+            flush=True,
+        )
+        print(f"error = {err:07.6f}")
         domain = np.zeros((self.nx, self.ny))
         domain[self.fractal_indices[:, 0], self.fractal_indices[:, 1]] = FRACTAL_VALUE
         domain = np.flip(domain, axis=1)
@@ -107,8 +129,8 @@ def main():
 
     precision = "f32/f32"
     lattice = LatticeD2Q9(precision)
-    Re = 2100.0
-    prescribed_vel = 0.04
+    Re = 100.0
+    prescribed_vel = 0.1
     clength = img.shape[0] * 3 - 1
     visc = prescribed_vel * clength / Re
 
@@ -121,6 +143,7 @@ def main():
         "precision": precision,
         "io_rate": 100,
         "print_info_rate": 100,
+        "return_fpost": True,
     }
 
     sim = FlowPastFractal(prescribed_vel, img, **kwargs)
@@ -128,4 +151,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        raise e
+    finally:
+        forces_log_h.flush()
+        forces_log_h.close()
